@@ -1,59 +1,74 @@
-# app2.py
+# app2.py — FINAL VERSION (Using tooltip dictionary file)
+
 import streamlit as st
 import requests
 import matplotlib.pyplot as plt
 import numpy as np
 import json
 import re
+import time
 from textblob import TextBlob
+import plotly.graph_objects as go
+
+# Import tooltip dictionary
+from kpi_tooltips import TOOLTIPS
 
 # ------------------------------- CONFIG -------------------------------
 BACKEND_URL = "http://localhost:8080"
 st.set_page_config(page_title="Voice Insights AI", layout="wide")
 
-# ------------------------------- TITLE -------------------------------
-st.title("🎙️ Voice Insights AI - Complete Call Intelligence Dashboard")
-st.caption("Transcription • Diarization (Speaker 1 / Speaker 2) • KPIs • Sentiment • Actionable Insights")
+
+# ------------------------------- HELPERS -------------------------------
+def safe_get(d, *path, default=None):
+    cur = d
+    for p in path:
+        if not isinstance(cur, dict):
+            return default
+        cur = cur.get(p, default)
+    return default if cur is None else cur
+
+
+def ensure_float(val, default=0.0):
+    try:
+        return float(val)
+    except:
+        return default
+
+
+# Tooltip wrapper — Option 1 (native HTML hover)
+def label_with_tip(text, key):
+    tip = TOOLTIPS.get(key, "")
+    return f'<span title="{tip}"><b>{text}</b></span>'
+
 
 # ------------------------------- DIARIZATION -------------------------------
 def diarize_keep_transcript_speakers(transcript: str):
-    """
-    Parse transcript into a list of turns:
-    [
-      { "speaker": "Speaker 1", "text": "...", "timestamp": float, "sentiment": float }
-    ]
-    Keeps speaker labels exactly as they appear in the transcript.
-    Produces synthetic timestamps in order of appearance.
-    """
-
     lines = transcript.splitlines()
     diarized = []
     ts = 0.0
 
-    speaker_pattern = re.compile(r'^(Speaker\s*\d+)\s*[:\-]\s*(.*)$', flags=re.I)
+    pattern = re.compile(r'^(Speaker\s*\d+)\s*[:\-]\s*(.*)$', flags=re.I)
 
     for raw in lines:
         line = raw.strip()
         if not line:
             continue
-        m = speaker_pattern.match(line)
+
+        m = pattern.match(line)
         if not m:
-            # If line doesn't match speaker pattern, consider it as continuaton of last speaker
             if diarized:
                 diarized[-1]["text"] += " " + line
-                # recompute sentiment
                 try:
                     diarized[-1]["sentiment"] = float(TextBlob(diarized[-1]["text"]).sentiment.polarity)
-                except Exception:
+                except:
                     diarized[-1]["sentiment"] = 0.0
             continue
 
         speaker = m.group(1)
         text = m.group(2).strip()
-
         try:
             sentiment = float(TextBlob(text).sentiment.polarity)
-        except Exception:
+        except:
             sentiment = 0.0
 
         diarized.append({
@@ -63,342 +78,329 @@ def diarize_keep_transcript_speakers(transcript: str):
             "sentiment": sentiment
         })
 
-        # increment synthetic time (approx per turn)
-        ts += float(np.random.uniform(3.0, 6.0))
+        ts += float(np.random.uniform(3, 6))
 
     return diarized
 
-# ------------------------------- KPI PARSING -------------------------------
-def safe_get(d: dict, path: list, default=None):
-    """ Safe nested get """
-    cur = d
-    for p in path:
-        if not isinstance(cur, dict):
-            return default
-        cur = cur.get(p, default)
-    return cur
 
-def parse_kpi_extraction(kpi_root: dict):
-    """
-    Return a normalized structure with all expected fields (even if missing).
-    """
-    cust = kpi_root.get("customer_problem", {}) or {}
-    agent = kpi_root.get("agent_analysis", {}) or {}
-    kpi = kpi_root.get("kpi", {}) or {}
-    sh = kpi_root.get("should_have_done", {}) or {}
-    ds = kpi_root.get("dataset_insights", {}) or {}
+# ------------------------------- VISUALS -------------------------------
+def gauge(title, value):
+    v = ensure_float(value)
+    v = max(0, min(v, 1))
 
-    parsed = {
-        "customer_problem": {
-            "primary_issue": cust.get("primary_issue", ""),
-            "issue_description": cust.get("issue_description", ""),
-            "urgency_level": cust.get("urgency_level", ""),
-            "severity": cust.get("severity", 0),
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=v,
+        gauge={
+            'axis': {'range': [0, 1]},
+            'bar': {'color': "#2a9df4"},
         },
-        "agent_analysis": {
-            "steps_explained_by_agent": agent.get("steps_explained_by_agent", []),
-            "correctness_of_guidance": agent.get("correctness_of_guidance", False),
-            "missed_opportunities": agent.get("missed_opportunities", []),
-            "agent_sentiment": agent.get("agent_sentiment", "") or agent.get("agent_sentiment", ""),
-            "compliance_flags": agent.get("compliance_flags", []),
-        },
-        "kpi": {
-            "customer_talk_ratio": kpi.get("customer_talk_ratio", 0),
-            "agent_talk_ratio": kpi.get("agent_talk_ratio", 0),
-            "silence_seconds": kpi.get("silence_seconds", 0),
-            "interruption_count": kpi.get("interruption_count", 0),
-            "frustration_score": kpi.get("frustration_score", 0),
-            "confusion_level": kpi.get("confusion_level", 0),
-        },
-        "should_have_done": {
-            "ideal_resolution_path": sh.get("ideal_resolution_path", sh.get("agent_actions", "")) if isinstance(sh, dict) else "",
-            "recommended_followup": sh.get("recommended_followup", ""),
-            "department_owner": sh.get("department_owner", ""),
-            # Some LLM payloads use different keys - handle that:
-            "agent_actions": sh.get("agent_actions", []) if isinstance(sh, dict) else []
-        },
-        "dataset_insights": {
-            "similar_calls_count": ds.get("similar_calls_count", ds.get("similar_calls_count", 0)),
-            "city_trend": ds.get("city_trend", ""),
-            "vintage_trend": ds.get("vintage_trend", ""),
-            "probable_root_cause": ds.get("probable_root_cause", ""),
-            # additional helpful fields if present
-            "overall_call_volume": ds.get("overall_call_volume", None),
-            "top_issues_by_category": ds.get("top_issues_by_category", None),
-        }
+        title={'text': title}
+    ))
+
+    fig.update_layout(height=240, margin=dict(l=10, r=10, t=40, b=10))
+    return fig
+
+
+def radar_agent_quality(agent: dict):
+    categories = ["Rapport", "Professionalism", "Accuracy", "Confidence"]
+
+    def val(k):
+        if isinstance(agent.get(k), str) and agent[k].endswith("%"):
+            return float(agent[k].replace("%", "")) / 100
+        return ensure_float(agent.get(k, 0))
+
+    vals = [
+        val("rapport_score"),
+        val("professionalism_score"),
+        val("solution_accuracy_score"),
+        1.0 if str(agent.get("agent_confidence_level", "")).lower() in ["high", "confident"] else 0.2
+    ]
+
+    vals = [max(0, min(v, 1)) for v in vals]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=vals + vals[:1],
+        theta=categories + categories[:1],
+        fill='toself'
+    ))
+
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+        showlegend=False,
+        height=360
+    )
+    return fig
+
+
+def sankey_call_flow(cp, aa, kpi, bi):
+    label_issue = cp.get("primary_issue", "Customer Issue")
+    label_agent = "Agent Response"
+    rl = ensure_float(kpi.get("resolution_likelihood", 0))
+    label_res = f"Resolution ({int(rl * 100)}%)"
+    label_impact = bi.get("service_gap_identified", "Business Impact")
+
+    labels = [label_issue, label_agent, label_res, label_impact]
+    sources = [0, 1, 2]
+    targets = [1, 2, 3]
+    values = [
+        1.0,
+        rl,
+        ensure_float(bi.get("risk_of_churn", 0))
+    ]
+
+    fig = go.Figure(go.Sankey(
+        node=dict(label=labels),
+        link=dict(source=sources, target=targets, value=values)
+    ))
+
+    fig.update_layout(height=360)
+    return fig
+
+
+# ------------------------------- PARSER -------------------------------
+def parse_kpi_extraction(root: dict):
+    return {
+        "customer_problem": root.get("customer_problem", {}),
+        "agent_analysis": root.get("agent_analysis", {}),
+        "kpi": root.get("kpi", {}),
+        "should_have_done": root.get("should_have_done", {}),
+        "actions": root.get("actions", {}),
+        "conversation_quality": root.get("conversation_quality", {}),
+        "trend_insights": root.get("trend_insights_from_similar_calls", {}),
+        "business_impact": root.get("business_impact", {}),
     }
-    return parsed
 
-# ------------------------------- FRONTEND INPUT -------------------------------
-st.subheader("🔗 Enter Call Recording URL")
-audio_url = st.text_input("Call Recording URL", placeholder="https://example.com/audio.mp3")
+
+# ------------------------------- SESSION -------------------------------
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+
+# ------------------------------- UI -------------------------------
+st.title("🎙️ Voice Insights AI — Final Dashboard")
+st.caption("AI-powered intelligence from your call recordings.")
+
+audio_url = st.text_input("Enter Audio URL:")
+timeout_sec = st.number_input("Timeout (sec)", min_value=10, max_value=120, value=40)
 
 if st.button("Analyze Call"):
     if not audio_url.strip():
-        st.error("Please enter a valid audio URL.")
+        st.error("Enter a valid URL.")
         st.stop()
 
-    # ------------------------------- AUDIO PLAYER -------------------------------
-    st.subheader("🎧 Audio Playback")
     st.audio(audio_url)
 
-    with st.spinner("Transcribing and analyzing..."):
+    with st.spinner("Processing..."):
         try:
             resp = requests.get(
                 f"{BACKEND_URL}/process",
-                params={"audio_url": audio_url},
-                timeout=150
+                params={"audio_url": audio_url, "timeout_sec": timeout_sec},
+                timeout=180
             )
             data = resp.json()
         except Exception as e:
-            st.error(f"Backend unreachable: {e}")
+            st.error(str(e))
             st.stop()
 
-    if "error" in data and data["error"]:
-        st.error("Processing failed: " + data["error"])
+    if "error" in data:
+        st.error(data["error"])
         st.json(data)
         st.stop()
 
     transcript = data.get("transcript", "")
-    # backend uses "kpi_extraction" top-level key in the examples you provided
-    kpi_root_raw = data.get("kpi_extraction", {}) or {}
-    evidence = data.get("evidence", {}) or {}
+    parsed = parse_kpi_extraction(data.get("kpi_extraction", {}))
 
-    if not transcript:
-        st.warning("No transcript returned from backend.")
-        st.stop()
+    cp = parsed["customer_problem"]
+    aa = parsed["agent_analysis"]
+    kpi = parsed["kpi"]
+    sh = parsed["should_have_done"]
+    actions = parsed["actions"]
+    cq = parsed["conversation_quality"]
+    ti = parsed["trend_insights"]
+    bi = parsed["business_impact"]
+    actions = parsed["actions"]
+    evidence = data.get("evidence", {})
 
-    # -------------------------------------------------------------------
-    # DIARIZE (KEEP SPEAKERS AS 'Speaker 1' / 'Speaker 2' EXACTLY)
-    # -------------------------------------------------------------------
-    diarized = diarize_keep_transcript_speakers(transcript)
+    st.session_state.history.append(data)
 
-    with st.expander("Show Transcript"):
-        for turn in diarized:
-            speaker = turn["speaker"]      # "Speaker 1" / "Speaker 2"
-            text_line = turn["text"]
+    # -------------------------------- TABS --------------------------------
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+        "Call Input", "Transcript & Timeline", "Customer Problem",
+        "Agent Performance", "KPI Metrics", "Conversation Quality",
+        "Trend Insights", "Business Impact", "Actionables"
+    ])
 
-            # --- Colors per speaker ---
-            if speaker == "Speaker 1":
-                color = "#3A8DC9"  # blue
-            elif speaker == "Speaker 2":
-                color = "#38C744"  # green
-            else:
-                color = "#888888"  # fallback grey
+    # ---------------- TAB 1: CALL INPUT ----------------
+    with tab1:
+        st.write("**Audio URL:**", audio_url)
+        st.json({"duration_ms": data.get("duration_ms", 0)})
 
+    # ---------------- TAB 2: TRANSCRIPT ----------------
+    with tab2:
+        diarized = diarize_keep_transcript_speakers(transcript)
+        st.subheader("Diarized Transcript")
+
+        for t in diarized:
+            color = "#3A8DC9" if t["speaker"] == "Speaker 1" else "#38C744"
             st.markdown(
                 f"""
-                <div style="
-                    background:{color};
-                    padding:10px;
-                    border-radius:10px;
-                    margin-bottom:6px;
-                ">
-                    <b>{speaker}:</b> {text_line}
+                <div style='background:{color};padding:10px;border-radius:6px;margin-bottom:4px;'>
+                    <b>{t['speaker']}:</b> {t['text']}
                 </div>
                 """,
-                unsafe_allow_html=True,
+                unsafe_allow_html=True
             )
 
-    # ------------------------------- TIMELINE -------------------------------
-    st.subheader("🕒 Conversation Timeline (speaker order)")
+    # ---------------- TAB 3: CUSTOMER PROBLEM ----------------
+    with tab3:
+        for key, val in cp.items():
+            st.markdown(f"{label_with_tip(key.replace('_',' ').title(), key)}: {val}", unsafe_allow_html=True)
 
-    timestamps = [t["timestamp"] for t in diarized]
-    speakers = [t["speaker"] for t in diarized]
-    # map speaker names to numeric value for simple timeline ordering
-    unique_speakers = sorted(list(dict.fromkeys(speakers)))  # keeps first-seen order but sorted for stability
-    speaker_to_num = {s: i for i, s in enumerate(unique_speakers)}
+    # ---------------- TAB 4: AGENT PERFORMANCE ----------------
+    with tab4:
+        for key, val in aa.items():
 
-    timeline_vals = [speaker_to_num.get(s, 0) for s in speakers]
+            # Heading with tooltip
 
-    fig, ax = plt.subplots(figsize=(10, 2))
-    if timestamps and timeline_vals:
-        ax.plot(timestamps, timeline_vals, marker="o", linestyle="-")
-        ax.set_yticks(list(speaker_to_num.values()))
-        ax.set_yticklabels(list(speaker_to_num.keys()))
-        ax.set_xlabel("Time (synthetic)")
-        ax.set_title("Speaker Participation Timeline")
-    else:
-        ax.text(0.5, 0.5, "No turns to plot", ha="center")
-    st.pyplot(fig)
+            if isinstance(val, list):
+                st.markdown(label_with_tip(key.replace("_", " ").title(), key), unsafe_allow_html=True)
+                if len(val) == 0:
+                    st.markdown("&nbsp;&nbsp;&nbsp;&nbsp;• _None_<br>", unsafe_allow_html=True)
+                else:
+                    bullet_text = ""
+                    for v in val:
+                        bullet_text += f"&nbsp;&nbsp;&nbsp;&nbsp;• {v}<br>"
+                    st.markdown(bullet_text, unsafe_allow_html=True)
+                st.markdown("---") 
 
-    st.markdown("---")
-
-    # ------------------------------- SENTIMENT / FRUSTRATION TRAJECTORIES -------------------------------
-    st.subheader("🔥 Speaker-wise Sentiment / Frustration Trajectories")
-
-    # Color map (same as transcript UI)
-    speaker_colors = {
-        "Speaker 1": "#3A8DC9",  # blue
-        "Speaker 2": "#38C744",  # green
-    }
-
-    # Build per-speaker lists preserving chronological order
-    speaker_series = {}
-    speaker_ts = {}
-
-    for t in diarized:
-        s = t["speaker"]
-        speaker_series.setdefault(s, []).append(t["sentiment"])
-        speaker_ts.setdefault(s, []).append(t["timestamp"])
-
-    # Create side-by-side plots
-    cols = st.columns(2)
-    speakers_list = list(speaker_series.keys())[:2]
-
-    # Prefer showing Speaker 1 and Speaker 2 if present
-    if "Speaker 1" in speaker_series and "Speaker 2" in speaker_series:
-        speakers_list = ["Speaker 1", "Speaker 2"]
-    elif len(speaker_series) == 1:
-        speakers_list = [list(speaker_series.keys())[0], None]
-    else:
-        while len(speakers_list) < 2:
-            speakers_list.append(None)
-
-    for idx, sp in enumerate(speakers_list):
-        with cols[idx]:
-            if sp is None:
-                st.write("")  # empty panel
-                continue
-
-            s_vals = np.array(speaker_series.get(sp, []), dtype=float)
-            s_ts = speaker_ts.get(sp, list(range(len(s_vals))))
-
-            st.markdown(f"**{sp} Sentiment (polarity)**")
-            if s_vals.size == 0:
-                st.info("No turns for this speaker.")
-                continue
-
-            # Normalize (-1..1 → 0..1)
-            minv, maxv = np.min(s_vals), np.max(s_vals)
-            if np.isclose(minv, maxv):
-                norm = np.full_like(s_vals, 0.5)
             else:
-                norm = (s_vals - minv) / (maxv - minv)
+                st.markdown(f"{label_with_tip(key.replace('_',' ').title(), key)}: {val}", unsafe_allow_html=True)
 
-            # ----- NEW: Consistent color for each speaker -----
-            line_color = speaker_colors.get(sp, "#888888")
+        st.plotly_chart(radar_agent_quality(aa), use_container_width=True)
 
-            fig_s, ax_s = plt.subplots(figsize=(6, 3))
-            ax_s.plot(s_ts, norm, marker="o", linewidth=2, markersize=6, color=line_color)
-            ax_s.set_ylim(0, 1)
-            ax_s.set_xlabel("Time")
-            ax_s.set_title(f"{sp} — Normalized Sentiment (0 to 1)")
-            ax_s.grid(True, linestyle="--", alpha=0.3)
+    # ---------------- TAB 5: KPI METRICS ----------------
+    with tab5:
+        st.subheader("Gauges")
 
-            st.pyplot(fig_s)
+        g1 = st.columns(3)
+        g1[0].plotly_chart(gauge("Customer Talk Ratio", kpi.get("customer_talk_ratio", 0)))
+        g1[1].plotly_chart(gauge("Agent Talk Ratio", kpi.get("agent_talk_ratio", 0)))
+        g1[2].plotly_chart(gauge("Resolution", kpi.get("resolution_likelihood", 0)))
 
-            # Key metrics
-            avg_sent = float(np.mean(s_vals)) if s_vals.size else 0.0
-            st.metric("Avg polarity", f"{avg_sent:.2f}")
-            st.metric("Turns", len(s_vals))
+        g2 = st.columns(3)
+        g2[0].plotly_chart(gauge("Frustration", kpi.get("frustration_score", 0)))
+        g2[1].plotly_chart(gauge("Confusion", kpi.get("confusion_level", 0)))
+        g2[2].plotly_chart(gauge("Empathy", kpi.get("empathy_score", 0)))
 
-    st.markdown("---")
+        # -------------------- FILTERED NUMERIC KPIs --------------------
+        st.subheader("Numeric KPIs")
+
+        # KPIs that should NOT be shown here (already in gauges)
+        normalized_keys = {
+            "customer_talk_ratio",
+            "agent_talk_ratio",
+            "frustration_score",
+            "confusion_level",
+            "empathy_score",
+            "resolution_likelihood"
+        }
+
+        # Filter remaining numeric KPIs
+        remaining_kpis = {k: v for k, v in kpi.items() if k not in normalized_keys}
+
+        # Display 3 per row
+        keys = list(remaining_kpis.keys())
+
+        for i in range(0, len(keys), 3):
+            row = st.columns(3)
+            for col_idx, k in enumerate(keys[i:i+3]):
+                with row[col_idx]:
+                    label = label_with_tip(k.replace("_"," ").title(), k)
+                    st.markdown(
+                        f"{label}: <b>{remaining_kpis[k]}</b>",
+                        unsafe_allow_html=True
+                    )
 
 
-    # ------------------------------- RAW BACKEND RESPONSE (debug) -------------------------------
-    st.subheader("Raw Backend Response (for debugging)")
-    with st.expander("Show raw JSON response"):
-        st.json(data)
+    # ---------------- TAB 6: CONVERSATION QUALITY ----------------
+    with tab6:
 
-    # ------------------------------- KPI DATA ACCESS -------------------------------
-    parsed_kpi = parse_kpi_extraction(kpi_root_raw)
+        st.subheader("Gauges")
 
-    # ------------------------------- GROUPED KPI UI -------------------------------
-    st.subheader("📊 KPI & Insights (grouped)")
+        g1 = st.columns(2)
+        g1[0].plotly_chart(gauge("Agent Talk Ratio", cq.get("clarity_score", 0)))
+        g1[1].plotly_chart(gauge("Listening Score", cq.get("listening_score", 0)))
 
-    # Customer Problem card
-    cp = parsed_kpi["customer_problem"]
-    st.markdown("### 🔎 Customer Problem")
-    st.markdown(f"**Primary Issue**  \n{cp['primary_issue'] or 'N/A'}")
-    st.markdown(f"**Urgency**  \n{cp['urgency_level'] or 'N/A'}")
-    st.markdown(f"**Severity**  \n{cp['severity']}")
-    st.markdown("**Issue Description**")
-    st.write(cp["issue_description"] or "N/A")
+        g2 = st.columns(2)
+        g2[0].plotly_chart(gauge("Relevance Score", cq.get("relevance_score", 0)))
+        g2[1].plotly_chart(gauge("Trust Building Score", cq.get("trust_building_score", 0)))
 
-    st.markdown("---")
+        g3 = st.columns(1)
+        g3[0].plotly_chart(gauge("Overall Score", cq.get("overall_score", 0)))
 
-    # Agent Analysis
-    aa = parsed_kpi["agent_analysis"]
-    st.markdown("### 🎧 Agent Analysis")
-    st.markdown("**Agent Sentiment (LLM)**")
-    st.write(aa.get("agent_sentiment", "") or "N/A")
+        normalized_cqs = {
+            "overall_score",
+            "clarity_score",
+            "listening_score",
+            "relevance_score",
+            "trust_building_score"
+        }
 
-    st.markdown("**Steps Explained by Agent**")
-    if aa["steps_explained_by_agent"]:
-        for s in aa["steps_explained_by_agent"]:
-            st.write(f"- {s}")
-    else:
-        st.write("N/A")
+        remaining_cqs = {k: v for k, v in cq.items() if k not in normalized_cqs}
 
-    st.markdown("**Missed Opportunities**")
-    if aa["missed_opportunities"]:
-        for m in aa["missed_opportunities"]:
-            st.write(f"- {m}")
-    else:
-        st.write("N/A")
+        for key in remaining_cqs:
+            if isinstance(cq.get(key), list):
+                st.markdown(label_with_tip(key.replace("_", " ").title(), key), unsafe_allow_html=True)
+                if len(cq.get(key)) == 0:
+                    st.markdown("&nbsp;&nbsp;&nbsp;&nbsp;• _None_<br>", unsafe_allow_html=True)
+                else:
+                    bullet_text = ""
+                    for v in cq.get(key):
+                        bullet_text += f"&nbsp;&nbsp;&nbsp;&nbsp;• {v}<br>"
+                    st.markdown(bullet_text, unsafe_allow_html=True)
+                st.markdown("---")
+            else:
+                st.markdown(f"{label_with_tip(key.replace('_',' ').title(), key)}: {cq.get(key)}", unsafe_allow_html=True)
 
-    st.markdown("**Compliance Flags**")
-    if aa["compliance_flags"]:
-        for c in aa["compliance_flags"]:
-            st.write(f"- {c}")
-    else:
-        st.write("None")
+    # ---------------- TAB 7: TREND INSIGHTS ----------------
+    with tab7:
+        for key, val in ti.items():
+            st.markdown(f"{label_with_tip(key.replace('_',' ').title(), key)}: {val}", unsafe_allow_html=True)
 
-    st.markdown("---")
+    # ---------------- TAB 8: BUSINESS IMPACT ----------------
+    with tab8:
+        for key, val in bi.items():
+            st.markdown(f"{label_with_tip(key.replace('_',' ').title(), key)}: {val}", unsafe_allow_html=True)
 
-    # KPI details (numbers)
-    k = parsed_kpi["kpi"]
-    st.markdown("### 📈 KPI Details (numeric)")
-    # display the small KPIs as metrics in columns
-    kcols = st.columns(6)
-    kcols[0].metric("Customer talk ratio", f"{k.get('customer_talk_ratio', 0):.2f}")
-    kcols[1].metric("Agent talk ratio", f"{k.get('agent_talk_ratio', 0):.2f}")
-    kcols[2].metric("Silence (s)", f"{k.get('silence_seconds', 0)}")
-    kcols[3].metric("Interruptions", f"{k.get('interruption_count', 0)}")
-    kcols[4].metric("Frustration score", f"{k.get('frustration_score', 0):.2f}")
-    kcols[5].metric("Confusion level", f"{k.get('confusion_level', 0):.2f}")
+        st.subheader("Sankey Summary Flow")
+        st.plotly_chart(sankey_call_flow(cp, aa, kpi, bi), use_container_width=True)
 
-    st.markdown("---")
+        st.subheader("Evidence")
+        st.json(evidence)
 
-    # Should Have Done
-    sh = parsed_kpi["should_have_done"]
-    st.markdown("### 🛠 Recommended Resolution Path")
-    st.markdown(f"**Ideal Path:**")
-    st.write(sh.get("ideal_resolution_path", "N/A"))
-    st.markdown(f"**Recommended Follow-up:**")
-    st.write(sh.get("recommended_followup", "N/A"))
-    st.markdown(f"**Department Owner:** {sh.get('department_owner', 'N/A')}")
+    with tab9:
+        for key, val in actions.items():
 
-    # Agent actions (if LLM provided a list under should_have_done.agent_actions)
-    if sh.get("agent_actions"):
-        st.markdown("**Agent actions that should have been taken**")
-        for a in sh["agent_actions"]:
-            st.write(f"- {a}")
+            # Heading with tooltip
 
-    st.markdown("---")
+            if isinstance(val, list):
+                st.markdown(label_with_tip(key.replace("_", " ").title(), key), unsafe_allow_html=True)
+                if len(val) == 0:
+                    st.markdown("&nbsp;&nbsp;&nbsp;&nbsp;• _None_<br>", unsafe_allow_html=True)
+                else:
+                    bullet_text = ""
+                    for v in val:
+                        bullet_text += f"&nbsp;&nbsp;&nbsp;&nbsp;• {v}<br>"
+                    st.markdown(bullet_text, unsafe_allow_html=True)
+                st.markdown("---") 
 
-    # Dataset Insights
-    ds = parsed_kpi["dataset_insights"]
-    st.markdown("### 📈 Dataset Insights")
-    st.write("Similar calls (est):", ds.get("similar_calls_count", "N/A"))
-    if ds.get("overall_call_volume"):
-        st.write("Overall call volume:", ds.get("overall_call_volume"))
-    if ds.get("top_issues_by_category"):
-        st.markdown("Top issues by category (partial):")
-        st.json(ds.get("top_issues_by_category"))
+            else:
+                st.markdown(f"{label_with_tip(key.replace('_',' ').title(), key)}: {val}", unsafe_allow_html=True)
 
-    st.markdown("**City trend:**")
-    st.write(ds.get("city_trend", "N/A"))
-    st.markdown("**Vintage trend:**")
-    st.write(ds.get("vintage_trend", "N/A"))
-    st.markdown("**Probable root cause:**")
-    st.write(ds.get("probable_root_cause", "N/A"))
 
-    st.markdown("---")
 
-    # Evidence
-    st.subheader("📁 Evidence & Grounding")
-    st.json(evidence)
 
-    st.success("✔ Completed Analysis")
+st.sidebar.markdown("---")
+st.sidebar.write("Built with ❤️ @ IndiaMART")

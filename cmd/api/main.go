@@ -5,41 +5,35 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
-	"voice-insights-go/internal/dataset"
 	"voice-insights-go/internal/logger"
 	"voice-insights-go/internal/processor"
 )
 
 func main() {
 	_ = godotenv.Load() // loads .env
+    fmt.Println(">> DEBUG: SEARCH_API_URL =", os.Getenv("SEARCH_API_URL"))
+
 
 	log := logger.New()
 	log.WithField("service", "voice-insights-go").Info("starting service")
 
-	// load dataset summary into memory
-	dataPath := os.Getenv("DATASET_PATH")
-	if dataPath == "" {
-		dataPath = "Data_Voice_Hackathon_Master.xlsx"
-	}
-	log.WithField("dataset_path", dataPath).Info("loading dataset summary")
-	summary, err := dataset.LoadAndSummarize(dataPath)
-	if err != nil {
-		log.WithError(err).Fatal("failed to load dataset summary")
-	}
-	log.WithField("total_calls", summary.TotalCalls).Info("dataset summary loaded")
-
 	mux := http.NewServeMux()
 
-	// health
+	// --------------------------------------------------------------------
+	// HEALTH CHECK
+	// --------------------------------------------------------------------
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		logger.New().WithRequest(r).Info("health check")
 		fmt.Fprint(w, "ok")
 	})
 
-	// process endpoint
+	// --------------------------------------------------------------------
+	// /process — main endpoint after removing dataset summaries
+	// --------------------------------------------------------------------
 	mux.HandleFunc("/process", func(w http.ResponseWriter, r *http.Request) {
 		reqLog := logger.New().WithRequest(r).WithField("handler", "process")
 		reqLog.Info("process request received")
@@ -50,21 +44,25 @@ func main() {
 			http.Error(w, "missing audio_url", http.StatusBadRequest)
 			return
 		}
+
 		timeoutSec := 40
 		if t := r.URL.Query().Get("timeout_sec"); t != "" {
 			fmt.Sscanf(t, "%d", &timeoutSec)
 		}
+
 		reqLog = reqLog.WithField("audio_url", audioURL).WithField("timeout_sec", timeoutSec)
 
 		start := time.Now()
-		res, err := processor.ProcessSingleCallWithDataset(audioURL, time.Duration(timeoutSec)*time.Second, summary)
+		res, err := processor.ProcessSingleCall(audioURL, time.Duration(timeoutSec)*time.Second)
 		duration := time.Since(start)
 		reqLog.WithField("duration_ms", duration.Milliseconds()).Info("processor finished")
+
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
 			reqLog.WithError(err).Warn("processor returned error")
 			w.WriteHeader(http.StatusInternalServerError)
 		}
+
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(res); err != nil {
@@ -72,34 +70,44 @@ func main() {
 		}
 	})
 
-	// demo endpoint (process first N rows from dataset for quick demo)
+	// --------------------------------------------------------------------
+	// /demo — simplified since dataset_summary is no longer used
+	// Provide: /demo?audio_urls=url1,url2,url3
+	// --------------------------------------------------------------------
 	mux.HandleFunc("/demo", func(w http.ResponseWriter, r *http.Request) {
 		reqLog := logger.New().WithRequest(r).WithField("handler", "demo")
 		reqLog.Info("demo invoked")
-		records, err := dataset.Load(dataPath)
-		if err != nil {
-			reqLog.WithError(err).Error("dataset load error")
-			http.Error(w, "dataset load error", 500)
+
+		audioList := r.URL.Query().Get("audio_urls")
+		if audioList == "" {
+			http.Error(w, "missing audio_urls (comma separated)", 400)
 			return
 		}
-		limit := 5
-		if len(records) < limit {
-			limit = len(records)
-		}
-		demo := records[:limit]
+
+		urls := strings.Split(audioList, ",")
 		var out []interface{}
-		for _, rec := range demo {
-			reqLog := reqLog.WithField("demo_call", rec.CallID).WithField("audio_url", rec.AudioURL)
+
+		for _, u := range urls {
+			u = strings.TrimSpace(u)
+			if u == "" {
+				continue
+			}
+			reqLog := reqLog.WithField("demo_audio_url", u)
 			reqLog.Info("processing demo call")
-			res, _ := processor.ProcessSingleCallWithDataset(rec.AudioURL, 25*time.Second, summary)
+
+			res, _ := processor.ProcessSingleCall(u, 25*time.Second)
 			out = append(out, res)
 		}
+
 		w.Header().Set("Content-Type", "application/json")
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		enc.Encode(out)
 	})
 
+	// --------------------------------------------------------------------
+	// SERVER SETUP
+	// --------------------------------------------------------------------
 	addr := fmt.Sprintf(":%s", envOr("PORT", "8080"))
 	srv := &http.Server{
 		Addr:         addr,
@@ -108,6 +116,7 @@ func main() {
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
+
 	log.WithField("addr", addr).Info("listening")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.WithError(err).Fatal("server terminated")
