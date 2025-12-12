@@ -6,35 +6,42 @@ import (
 	"strings"
 
 	"github.com/xuri/excelize/v2"
+	"voice-insights-go/internal/logger"
 )
 
 type DatasetSummary struct {
-	TotalCalls           int               `json:"total_calls"`
-	ByCategory           map[string]int    `json:"by_category"`
-	ByCityTopN           map[string][]string `json:"by_city_top_issues"`
-	ByVintageBucket      map[string]float64 `json:"by_vintage_bucket_rate"`
-	TopExampleTranscripts []string         `json:"top_example_transcripts"`
+	TotalCalls            int                 `json:"total_calls"`
+	ByCategory            map[string]int      `json:"by_category"`
+	ByCityTopN            map[string][]string `json:"by_city_top_issues"`
+	ByVintageBucket       map[string]float64  `json:"by_vintage_bucket_rate"`
+	TopExampleTranscripts []string            `json:"top_example_transcripts"`
 }
 
 // LoadAndSummarize reads the dataset and produces a compact summary used as LLM context.
 func LoadAndSummarize(path string) (DatasetSummary, error) {
+	log := logger.New().WithField("component", "dataset.summary").WithField("path", path)
+	log.Info("opening dataset for summarization")
 	f, err := excelize.OpenFile(path)
 	if err != nil {
+		log.WithError(err).Error("open failed")
 		return DatasetSummary{}, fmt.Errorf("open: %w", err)
 	}
 	sheets := f.GetSheetList()
 	if len(sheets) == 0 {
+		log.Error("no sheets found")
 		return DatasetSummary{}, fmt.Errorf("no sheets")
 	}
 	rows, err := f.GetRows(sheets[0])
 	if err != nil {
+		log.WithError(err).Error("read rows failed")
 		return DatasetSummary{}, fmt.Errorf("read: %w", err)
 	}
 	if len(rows) <= 1 {
+		log.Error("no data rows")
 		return DatasetSummary{}, fmt.Errorf("no data rows")
 	}
-	// simple heuristics similar to loader
-	complaintTokens := []string{"price", "refund", "payment", "delivery", "broken", "verification", "register", "gst", "tax"}
+
+	complaintTokens := []string{"price", "refund", "payment", "delivery", "broken", "verification", "register", "gst", "tax", "quality"}
 	byCat := map[string]int{}
 	byCityCounts := map[string]map[string]int{}
 	byVintageCount := map[string]int{}
@@ -42,7 +49,6 @@ func LoadAndSummarize(path string) (DatasetSummary, error) {
 	examples := []string{}
 
 	header := rows[0]
-	// detect transcript column index by name heuristics
 	transcriptIdx := -1
 	cityIdx := -1
 	vintageIdx := -1
@@ -58,7 +64,6 @@ func LoadAndSummarize(path string) (DatasetSummary, error) {
 			vintageIdx = i
 		}
 	}
-	// fallback: transcript index may be 5 or 6
 	if transcriptIdx == -1 {
 		if len(header) > 5 {
 			transcriptIdx = 5
@@ -66,6 +71,11 @@ func LoadAndSummarize(path string) (DatasetSummary, error) {
 			transcriptIdx = -1
 		}
 	}
+	log.WithFields(map[string]interface{}{
+		"transcriptIdx": transcriptIdx,
+		"cityIdx":       cityIdx,
+		"vintageIdx":    vintageIdx,
+	}).Info("detected summary column indices")
 
 	for i, r := range rows {
 		if i == 0 {
@@ -84,7 +94,6 @@ func LoadAndSummarize(path string) (DatasetSummary, error) {
 			vintage = strings.TrimSpace(r[vintageIdx])
 		}
 		lower := strings.ToLower(text)
-		// classify basic category heuristics
 		cat := "other"
 		for _, t := range complaintTokens {
 			if strings.Contains(lower, t) {
@@ -149,11 +158,22 @@ func LoadAndSummarize(path string) (DatasetSummary, error) {
 			byVintageRate[k] = float64(byVintageConf[k]) / float64(tot)
 		}
 	}
-	return DatasetSummary{
-		TotalCalls:           len(rows) - 1,
-		ByCategory:           byCat,
-		ByCityTopN:           byCityTopN,
-		ByVintageBucket:      byVintageRate,
+
+	ds := DatasetSummary{
+		TotalCalls:            len(rows) - 1,
+		ByCategory:            byCat,
+		ByCityTopN:            byCityTopN,
+		ByVintageBucket:       byVintageRate,
 		TopExampleTranscripts: examples,
-	}, nil
+	}
+	log.WithFields(map[string]interface{}{
+		"total_calls": ds.TotalCalls,
+		"categories":  len(ds.ByCategory),
+		"cities":      len(ds.ByCityTopN),
+	}).Info("dataset summarization complete")
+	// log top example transcripts (full)
+	for i, ex := range ds.TopExampleTranscripts {
+		log.WithField("example_index", i).Debug("example transcript", ex)
+	}
+	return ds, nil
 }

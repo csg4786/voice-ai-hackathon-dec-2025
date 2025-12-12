@@ -6,27 +6,36 @@ import (
 	"strings"
 
 	"github.com/xuri/excelize/v2"
+	"voice-insights-go/internal/logger"
 	"voice-insights-go/internal/types"
 )
 
 // Load attempts to auto-detect audio URL column by header heuristics
 func Load(path string) ([]types.CallRecord, error) {
+	log := logger.New().WithField("component", "dataset.Load").WithField("path", path)
+	log.Info("opening dataset file")
 	f, err := excelize.OpenFile(path)
 	if err != nil {
+		log.WithError(err).Error("open file failed")
 		return nil, fmt.Errorf("open file: %w", err)
 	}
 	sheets := f.GetSheetList()
 	if len(sheets) == 0 {
+		log.Error("no sheets found in file")
 		return nil, fmt.Errorf("no sheets")
 	}
 	rows, err := f.GetRows(sheets[0])
 	if err != nil {
+		log.WithError(err).Error("read rows failed")
 		return nil, fmt.Errorf("read rows: %w", err)
 	}
 	if len(rows) <= 1 {
+		log.Error("no data rows")
 		return nil, fmt.Errorf("no data rows")
 	}
 	header := rows[0]
+	log.WithField("columns", len(header)).Info("detected header columns")
+
 	// find audio column
 	audioIdx := -1
 	callIDIdx := -1
@@ -37,7 +46,7 @@ func Load(path string) ([]types.CallRecord, error) {
 	for i, h := range header {
 		l := strings.ToLower(strings.TrimSpace(h))
 		switch {
-		case strings.Contains(l, "audio") || strings.Contains(l, "record") || strings.Contains(l, "call") && strings.Contains(l, "link") || strings.Contains(l, "url"):
+		case strings.Contains(l, "audio") || strings.Contains(l, "record") || (strings.Contains(l, "call") && strings.Contains(l, "link")) || strings.Contains(l, "url"):
 			if audioIdx == -1 {
 				audioIdx = i
 			}
@@ -57,11 +66,20 @@ func Load(path string) ([]types.CallRecord, error) {
 			repeatIdx = i
 		}
 	}
+	log.WithFields(map[string]interface{}{
+		"audioIdx":   audioIdx,
+		"callIDIdx":  callIDIdx,
+		"callTypeIdx": callTypeIdx,
+		"cityIdx":    cityIdx,
+		"vintageIdx": vintageIdx,
+		"repeatIdx":  repeatIdx,
+	}).Info("column mapping heuristics result")
+
 	// fallback heuristics
 	if audioIdx == -1 {
-		// try common positions: 4 or 5
 		if len(header) > 4 {
 			audioIdx = 4
+			log.WithField("audioIdx", audioIdx).Warn("audio index not detected by header heuristics; using fallback index 4")
 		} else {
 			audioIdx = -1
 		}
@@ -92,10 +110,10 @@ func Load(path string) ([]types.CallRecord, error) {
 		}
 		// if audio URL doesn't look like URL, skip
 		if !(strings.HasPrefix(strings.ToLower(record.AudioURL), "http://") || strings.HasPrefix(strings.ToLower(record.AudioURL), "https://")) {
-			// skip invalid audio rows quietly
 			continue
 		}
 		out = append(out, record)
 	}
+	log.WithField("loaded_count", len(out)).Info("dataset rows parsed and returned")
 	return out, nil
 }
