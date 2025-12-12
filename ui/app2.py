@@ -173,25 +173,32 @@ if st.button("Analyze Call"):
     # -------------------------------------------------------------------
     diarized = diarize_keep_transcript_speakers(transcript)
 
-    # ------------------------------- TRANSCRIPT DISPLAY -------------------------------
-    st.subheader("💬 Speaker Transcript (keeps Speaker IDs exactly as in transcript)")
-
-    with st.expander("Show Transcript (grouped by speaker turns)"):
+    with st.expander("Show Transcript"):
         for turn in diarized:
-            sp = turn["speaker"]
+            speaker = turn["speaker"]      # "Speaker 1" / "Speaker 2"
             text_line = turn["text"]
-            # Speaker-specific color - keep simple
-            color = "#F2F2F2"
+
+            # --- Colors per speaker ---
+            if speaker == "Speaker 1":
+                color = "#3A8DC9"  # blue
+            elif speaker == "Speaker 2":
+                color = "#38C744"  # green
+            else:
+                color = "#888888"  # fallback grey
+
             st.markdown(
                 f"""
-                <div style="background:{color};padding:10px;border-radius:8px;margin-bottom:6px;">
-                    <b>{sp}:</b> {text_line}
+                <div style="
+                    background:{color};
+                    padding:10px;
+                    border-radius:10px;
+                    margin-bottom:6px;
+                ">
+                    <b>{speaker}:</b> {text_line}
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-
-    st.markdown("---")
 
     # ------------------------------- TIMELINE -------------------------------
     st.subheader("🕒 Conversation Timeline (speaker order)")
@@ -220,9 +227,16 @@ if st.button("Analyze Call"):
     # ------------------------------- SENTIMENT / FRUSTRATION TRAJECTORIES -------------------------------
     st.subheader("🔥 Speaker-wise Sentiment / Frustration Trajectories")
 
+    # Color map (same as transcript UI)
+    speaker_colors = {
+        "Speaker 1": "#3A8DC9",  # blue
+        "Speaker 2": "#38C744",  # green
+    }
+
     # Build per-speaker lists preserving chronological order
     speaker_series = {}
     speaker_ts = {}
+
     for t in diarized:
         s = t["speaker"]
         speaker_series.setdefault(s, []).append(t["sentiment"])
@@ -230,50 +244,57 @@ if st.button("Analyze Call"):
 
     # Create side-by-side plots
     cols = st.columns(2)
-    speakers_list = list(speaker_series.keys())[:2]  # at most two speakers; if more, show first two
-    # Ensure we always show Speaker 1 and Speaker 2 if present
+    speakers_list = list(speaker_series.keys())[:2]
+
+    # Prefer showing Speaker 1 and Speaker 2 if present
     if "Speaker 1" in speaker_series and "Speaker 2" in speaker_series:
         speakers_list = ["Speaker 1", "Speaker 2"]
     elif len(speaker_series) == 1:
         speakers_list = [list(speaker_series.keys())[0], None]
     else:
-        # pad to two
         while len(speakers_list) < 2:
             speakers_list.append(None)
 
     for idx, sp in enumerate(speakers_list):
         with cols[idx]:
             if sp is None:
-                st.write("")  # empty placeholder
+                st.write("")  # empty panel
                 continue
+
             s_vals = np.array(speaker_series.get(sp, []), dtype=float)
             s_ts = speaker_ts.get(sp, list(range(len(s_vals))))
+
             st.markdown(f"**{sp} Sentiment (polarity)**")
             if s_vals.size == 0:
                 st.info("No turns for this speaker.")
                 continue
 
-            # normalize to 0..1 for plotting (polarity is -1..1)
-            minv = np.min(s_vals)
-            maxv = np.max(s_vals)
-            if np.isclose(maxv, minv):
+            # Normalize (-1..1 → 0..1)
+            minv, maxv = np.min(s_vals), np.max(s_vals)
+            if np.isclose(minv, maxv):
                 norm = np.full_like(s_vals, 0.5)
             else:
                 norm = (s_vals - minv) / (maxv - minv)
 
+            # ----- NEW: Consistent color for each speaker -----
+            line_color = speaker_colors.get(sp, "#888888")
+
             fig_s, ax_s = plt.subplots(figsize=(6, 3))
-            ax_s.plot(s_ts, norm, marker="o")
+            ax_s.plot(s_ts, norm, marker="o", linewidth=2, markersize=6, color=line_color)
             ax_s.set_ylim(0, 1)
-            ax_s.set_xlabel("Time (synthetic)")
-            ax_s.set_title(f"{sp} sentiment (normalized - 0 to 1)")
+            ax_s.set_xlabel("Time")
+            ax_s.set_title(f"{sp} — Normalized Sentiment (0 to 1)")
+            ax_s.grid(True, linestyle="--", alpha=0.3)
+
             st.pyplot(fig_s)
 
-            # small metrics
+            # Key metrics
             avg_sent = float(np.mean(s_vals)) if s_vals.size else 0.0
-            st.metric(label="Avg polarity", value=f"{avg_sent:.2f}")
-            st.metric(label="Turns", value=len(s_vals))
+            st.metric("Avg polarity", f"{avg_sent:.2f}")
+            st.metric("Turns", len(s_vals))
 
     st.markdown("---")
+
 
     # ------------------------------- RAW BACKEND RESPONSE (debug) -------------------------------
     st.subheader("Raw Backend Response (for debugging)")
