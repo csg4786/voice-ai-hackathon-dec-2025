@@ -13,7 +13,7 @@ import (
 
 // ProcessSingleCall advanced flow (returns types.KPIResult)
 // NOTE: The DatasetSummary is removed because insights now come purely from k-relevant search.
-func ProcessSingleCall(audioURL string, timeout time.Duration) (types.KPIResult, error) {
+func ProcessSingleCall(audioURL string, k int, timeout time.Duration) (types.KPIResult, error) {
 	log := logger.New().WithField("component", "processor")
 	start := time.Now()
 
@@ -68,7 +68,7 @@ Speaker 2: I understand sir, I will investigate.`
 	// -------------------------------------------------------------
 	// STEP 2 — EXTRACTION (search + LLM)
 	// -------------------------------------------------------------
-	kpiExtract, err := extractor.ExtractAdvanced(tr) // No dataset summary, extractor handles search internally
+	kpiExtract, err := extractor.ExtractAdvanced(tr, k) // No dataset summary, extractor handles search internally
 	if err != nil {
 		res.Error = fmt.Sprintf("llm extraction error: %v", err)
 		res.DurationMs = time.Since(start).Milliseconds()

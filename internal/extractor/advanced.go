@@ -21,24 +21,75 @@ import (
 func BuildAdvancedPrompt(transcript string, searchResults any) string {
 	srJSON, _ := json.MarshalIndent(searchResults, "", "  ")
 
-	// Strict Schema v2 prompt (return only JSON)
 	prompt := `You are an expert Call Quality, Customer Insights, and Resolution Intelligence engine.
 
-Your job is to analyze:
-1. The CURRENT CALL TRANSCRIPT
-2. The TOP-K MOST RELEVANT HISTORICAL CALLS (SEARCH RESULTS)
+Your task:
+Analyze the CURRENT CALL TRANSCRIPT and the TOP-K SEARCH RESULTS,
+and produce insights **strictly following SCHEMA v2.0**.
 
-Using BOTH inputs, you must produce insights strictly following the JSON schema below.
-Your answers MUST be grounded in:
-- The transcript
-- The provided search results
-- NO outside knowledge
-- NO hallucinated numbers
+You MUST return ONLY valid JSON matching the schema exactly.
 
-If information is missing, leave fields empty or set them to 0/false instead of inventing details.
+======================================================================
+STRICT VALUE RANGE ENFORCEMENT (MANDATORY)
+======================================================================
 
-----------------------------------------------------------------------
-SCHEMA v2.0 (STRICT — RETURN ONLY JSON)
+All numeric fields MUST stay inside these ranges:
+
+### KPI Ranges
+- customer_talk_ratio:        0.0–1.0
+- agent_talk_ratio:           0.0–1.0
+- silence_seconds:            >= 0
+- interruption_count:         >= 0 (integer)
+- frustration_score:          0.0–1.0
+- confusion_level:            0.0–1.0
+- empathy_score:              0.0–1.0
+- resolution_likelihood:      0.0–1.0
+- avg_sentence_length_customer: >= 0
+- avg_sentence_length_agent:    >= 0
+- dead_air_instances:         >= 0 (integer)
+- topic_switch_count:         >= 0 (integer)
+
+### Agent Analysis Score Ranges
+- rapport_score:              0.0–1.0
+- professionalism_score:      0.0–1.0
+- solution_accuracy_score:    0.0–1.0
+
+### Conversation Quality Score Ranges
+- overall_score:              0.0–1.0
+- clarity_score:              0.0–1.0
+- listening_score:            0.0–1.0
+- relevance_score:            0.0–1.0
+- trust_building_score:       0.0–1.0
+
+### Trend Insights
+- similar_calls_count:        >= 0 (integer)
+- historical_resolution_rate: 0.0–1.0
+- historical_escalation_rate: 0.0–1.0
+
+### Business Impact
+- risk_of_churn:              0.0–1.0
+
+If any number exceeds its allowed range,
+**you MUST clamp it within the range**.
+
+Examples:
+- If frustration_score = 1.3 → return 1.0
+- If agent_talk_ratio = -0.2 → return 0.0
+- If dead_air_instances = -5 → return 0
+
+======================================================================
+STRICT RULES:
+======================================================================
+1. **NO hallucinations** — if unsure, output 0 or empty.
+2. Base ALL insights on transcript + search results.
+3. DO NOT mention transcript text in output.
+4. DO NOT mention search results explicitly.
+5. DO NOT add extra fields or remove fields.
+6. DO NOT wrap JSON in quotes or backticks.
+7. **Return ONLY valid JSON matching SCHEMA v2.0 exactly.**
+
+======================================================================
+SCHEMA v2.0 (STRICT OUTPUT)
 {
   "customer_problem": {
     "primary_issue": "",
@@ -124,47 +175,21 @@ SCHEMA v2.0 (STRICT — RETURN ONLY JSON)
     "fix_urgency_level": ""
   }
 }
-----------------------------------------------------------------------
 
-GUIDELINES FOR ANALYSIS:
-
-1. Ground insights in the transcript.
-2. Use SEARCH RESULTS ONLY for:
-   - trend patterns
-   - common root causes
-   - issue repetition
-   - city-wise or vintage-wise trends
-   - escalation probability
-   - resolution playbook inference
-   - historical resolution or dissatisfaction patterns
-
-3. DO NOT hallucinate numbers or percentages.
-   If unsure, provide qualitative analysis or 0/empty.
-
-4. KPIs must be realistic and derived from:
-   - talk ratios
-   - interruptions
-   - emotional cues
-   - agent behavior
-   - customer sentiment
-
-5. DO NOT mention the transcript or search results in the final JSON.
-   DO NOT include commentary.
-   DO NOT escape or wrap JSON in backticks.
-
-----------------------------------------------------------------------
+======================================================================
 SEARCH RESULTS (Top-K similar calls):
 %s
 
 TRANSCRIPT:
 %s
 
-----------------------------------------------------------------------
-Return ONLY valid JSON that exactly matches SCHEMA v2.0.
+======================================================================
+Return ONLY valid JSON.
 `
 
 	return fmt.Sprintf(prompt, string(srJSON), transcript)
 }
+
 
 // FetchSearchResults calls your /search API and returns unmarshalled JSON (any).
 func FetchSearchResults(searchAPIURL string, transcript string, k int, httpTimeout time.Duration) (any, error) {
@@ -205,11 +230,11 @@ func FetchSearchResults(searchAPIURL string, transcript string, k int, httpTimeo
 
 // ExtractAdvanced orchestrates search -> prompt build -> LLM -> parse
 // Keeps the same return signature types.KPIExtraction for compatibility.
-func ExtractAdvanced(transcript string) (types.KPIExtraction, error) {
+func ExtractAdvanced(transcript string, k int) (types.KPIExtraction, error) {
 
 	var (
-		httpTimeout     = 25 * time.Second
-		maxRetryTime    = 45 * time.Second
+		httpTimeout     = 60 * time.Second
+		maxRetryTime    = 60 * time.Second
 		searchAPIURL    = os.Getenv("SEARCH_API_URL")
 		llmGatewayURL   = os.Getenv("LLM_GATEWAY_URL")
 		llmGatewayModel = os.Getenv("LLM_MODEL")
@@ -319,7 +344,7 @@ func ExtractAdvanced(transcript string) (types.KPIExtraction, error) {
 	}
 
 	// 1) call search API (k=3)
-	searchResults, err := FetchSearchResults(searchAPIURL, transcript, 3, httpTimeout)
+	searchResults, err := FetchSearchResults(searchAPIURL, transcript, k, httpTimeout)
 	if err != nil {
 		return types.KPIExtraction{}, fmt.Errorf("search API failed: %w", err)
 	}

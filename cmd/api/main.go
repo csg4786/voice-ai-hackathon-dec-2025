@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
+    "strconv"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -40,8 +40,18 @@ func main() {
 
 		audioURL := r.URL.Query().Get("audio_url")
 		if audioURL == "" {
-			reqLog.Warn("missing audio_url")
+            reqLog.Warn("missing audio_url")
 			http.Error(w, "missing audio_url", http.StatusBadRequest)
+			return
+		}
+
+        k := 3
+        kstr := r.URL.Query().Get("k")
+        if kstr == "" {
+            parsedk, kerr := strconv.ParseInt(kstr, 10, 64)
+            if kerr == nil {
+                k = int(parsedk) // Convert int64 to int if desired
+            }
 			return
 		}
 
@@ -53,7 +63,7 @@ func main() {
 		reqLog = reqLog.WithField("audio_url", audioURL).WithField("timeout_sec", timeoutSec)
 
 		start := time.Now()
-		res, err := processor.ProcessSingleCall(audioURL, time.Duration(timeoutSec)*time.Second)
+		res, err := processor.ProcessSingleCall(audioURL, k, time.Duration(timeoutSec)*2*time.Second)
 		duration := time.Since(start)
 		reqLog.WithField("duration_ms", duration.Milliseconds()).Info("processor finished")
 
@@ -68,41 +78,6 @@ func main() {
 		if err := enc.Encode(res); err != nil {
 			reqLog.WithError(err).Error("failed to write response")
 		}
-	})
-
-	// --------------------------------------------------------------------
-	// /demo — simplified since dataset_summary is no longer used
-	// Provide: /demo?audio_urls=url1,url2,url3
-	// --------------------------------------------------------------------
-	mux.HandleFunc("/demo", func(w http.ResponseWriter, r *http.Request) {
-		reqLog := logger.New().WithRequest(r).WithField("handler", "demo")
-		reqLog.Info("demo invoked")
-
-		audioList := r.URL.Query().Get("audio_urls")
-		if audioList == "" {
-			http.Error(w, "missing audio_urls (comma separated)", 400)
-			return
-		}
-
-		urls := strings.Split(audioList, ",")
-		var out []interface{}
-
-		for _, u := range urls {
-			u = strings.TrimSpace(u)
-			if u == "" {
-				continue
-			}
-			reqLog := reqLog.WithField("demo_audio_url", u)
-			reqLog.Info("processing demo call")
-
-			res, _ := processor.ProcessSingleCall(u, 25*time.Second)
-			out = append(out, res)
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		enc.Encode(out)
 	})
 
 	// --------------------------------------------------------------------

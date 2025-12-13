@@ -183,7 +183,7 @@ st.title("🎙️ Voice Insights AI — Final Dashboard")
 st.caption("AI-powered intelligence from your call recordings.")
 
 audio_url = st.text_input("Enter Audio URL:")
-timeout_sec = st.number_input("Timeout (sec)", min_value=10, max_value=120, value=40)
+k = st.number_input("Timeout (sec)", min_value=1, max_value=10, value=3)
 
 if st.button("Analyze Call"):
     if not audio_url.strip():
@@ -196,7 +196,7 @@ if st.button("Analyze Call"):
         try:
             resp = requests.get(
                 f"{BACKEND_URL}/process",
-                params={"audio_url": audio_url, "timeout_sec": timeout_sec},
+                params={"audio_url": audio_url, "k": k},
                 timeout=180
             )
             data = resp.json()
