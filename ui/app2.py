@@ -183,7 +183,7 @@ st.title("🎙️ Voice Insights AI — Final Dashboard")
 st.caption("AI-powered intelligence from your call recordings.")
 
 audio_url = st.text_input("Enter Audio URL:")
-k = st.number_input("Timeout (sec)", min_value=1, max_value=10, value=3)
+k = st.number_input("K (number of relevant records to fetch)", min_value=1, max_value=10, value=3)
 
 if st.button("Analyze Call"):
     if not audio_url.strip():
